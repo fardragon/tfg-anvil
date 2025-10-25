@@ -1,0 +1,40 @@
+{
+	"name": "Ziglang devcontainer",
+	"build": {
+		"dockerfile": "Dockerfile",
+		"args": {
+			"ZIG_VERSION": "0.15.2",
+			"MINISIGN_VERSION": "0.12"
+		}
+	},
+	"capAdd": [
+		"SYS_PTRACE"
+	],
+	"securityOpt": [
+		"seccomp=unconfined"
+	],
+	"features": {},
+	"customizations": {
+		"vscode": {
+			"settings": {
+				"[zig]": {
+					"editor.codeActionsOnSave": {
+						"source.fixAll": "explicit"
+					}
+				},
+				"zig.path": "zig",
+				"zig.zls.enabled": "on",
+				"zig.zls.path": "zls",
+				"zig.zls.enableBuildOnSave": true
+			},
+			"extensions": [
+				"ms-azuretools.vscode-docker",
+				"ziglang.vscode-zig",
+				"ianic.zig-language-extras",
+				"lorenzopirro.zig-snippets",
+				"vadimcn.vscode-lldb"
+			]
+		}
+	},
+	"remoteUser": "vscode"
+}

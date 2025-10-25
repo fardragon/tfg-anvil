@@ -1,0 +1,532 @@
+const std = @import("std");
+
+const Action = enum(i8) {
+    LightHit = -3,
+    MediumHit = -6,
+    HardHit = -9,
+    Draw = -15,
+    Punch = 2,
+    Bend = 7,
+    Upset = 13,
+    Shrink = 16,
+
+    fn max() u8 {
+        comptime var max_value: u8 = 0;
+
+        inline for (std.meta.fields(Action)) |action| {
+            if (@abs(action.value) > max_value) {
+                max_value = @abs(action.value);
+            }
+        }
+
+        return max_value;
+    }
+
+    fn anyHit() []const Action {
+        return &.{ .LightHit, .MediumHit, .HardHit };
+    }
+
+    fn anyAction() []const Action {
+        return &.{ .LightHit, .MediumHit, .HardHit, .Draw, .Punch, .Bend, .Upset, .Shrink };
+    }
+
+    pub fn format(self: Action, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        const colour_code: u8 = switch (self) {
+            .LightHit => 14,
+            .MediumHit => 27,
+            .HardHit => 18,
+            .Draw => 56,
+            .Punch => 10,
+            .Bend => 11,
+            .Upset => 166,
+            .Shrink => 1,
+        };
+
+        return writer.print("\x1b[38;5;{}m{s}\x1b[0m", .{ colour_code, @tagName(self) });
+    }
+};
+
+fn solve_for_target(allocator: std.mem.Allocator, target_value: i32) !std.ArrayList(Action) {
+    const limit = @as(u32, @abs(target_value)) + Action.max() * 3;
+
+    const State = struct {
+        position: i32,
+        actions_taken: std.ArrayList(Action),
+    };
+
+    var queue = std.ArrayList(State){};
+    var visited: std.AutoHashMap(i32, void) = .init(allocator);
+
+    defer {
+        for (queue.items) |*state| {
+            state.actions_taken.deinit(allocator);
+        }
+        queue.deinit(allocator);
+        visited.deinit();
+    }
+
+    try queue.append(allocator, State{
+        .position = 0,
+        .actions_taken = .empty,
+    });
+    try visited.putNoClobber(0, {});
+
+    while (queue.items.len > 0) {
+        var current_state = queue.orderedRemove(0);
+        defer current_state.actions_taken.deinit(allocator);
+
+        inline for (std.meta.fields(Action)) |action| {
+            const next_position = current_state.position + action.value;
+            if (next_position == target_value) {
+                var solution = try current_state.actions_taken.clone(allocator);
+                errdefer solution.deinit(allocator);
+                try solution.append(allocator, @enumFromInt(action.value));
+                return solution;
+            }
+
+            if (@abs(next_position) < limit and !visited.contains(next_position)) {
+                try visited.putNoClobber(next_position, {});
+                var new_actions = try current_state.actions_taken.clone(allocator);
+                errdefer new_actions.deinit(allocator);
+                try new_actions.append(allocator, @enumFromInt(action.value));
+
+                try queue.append(allocator, State{
+                    .position = next_position,
+                    .actions_taken = new_actions,
+                });
+            }
+        }
+    }
+
+    return error.NoSolution;
+}
+
+const RuleVariations = struct {
+    variations: std.ArrayList(std.ArrayList(Action)),
+
+    pub const empty: RuleVariations = .{
+        .variations = .empty,
+    };
+
+    fn appendSingle(self: *RuleVariations, allocator: std.mem.Allocator, action: Action) !void {
+        if (self.variations.items.len == 0) {
+            try self.variations.append(allocator, std.ArrayList(Action){});
+        }
+
+        for (self.variations.items) |*variation| {
+            try variation.append(allocator, action);
+        }
+    }
+
+    fn appendMany(self: *RuleVariations, allocator: std.mem.Allocator, actions: []const Action) !void {
+        if (self.variations.items.len == 0) {
+            try self.variations.append(allocator, std.ArrayList(Action){});
+        }
+
+        var new_variations: RuleVariations = .empty;
+        errdefer new_variations.deinit(allocator);
+
+        for (self.variations.items) |variation| {
+            for (actions) |action| {
+                var new_variation = try variation.clone(allocator);
+                errdefer new_variation.deinit(allocator);
+                try new_variation.append(allocator, action);
+                try new_variations.variations.append(allocator, new_variation);
+            }
+        }
+
+        self.deinit(allocator);
+        self.* = new_variations;
+    }
+
+    fn clone(self: RuleVariations, allocator: std.mem.Allocator) !RuleVariations {
+        var result: RuleVariations = .empty;
+        errdefer result.deinit(allocator);
+
+        try result.variations.ensureTotalCapacity(allocator, self.variations.items.len);
+        for (self.variations.items) |variation| {
+            var cloned_variation = try variation.clone(allocator);
+            errdefer cloned_variation.deinit(allocator);
+            result.variations.appendAssumeCapacity(cloned_variation);
+        }
+
+        return result;
+    }
+
+    fn combine(self: *RuleVariations, allocator: std.mem.Allocator, other: *RuleVariations) !void {
+        try self.variations.ensureTotalCapacity(allocator, self.variations.items.len + other.variations.items.len);
+        for (other.variations.items) |variation| {
+            self.variations.appendAssumeCapacity(try variation.clone(allocator));
+        }
+    }
+
+    fn deinit(self: *RuleVariations, allocator: std.mem.Allocator) void {
+        for (self.variations.items) |*variation| {
+            variation.deinit(allocator);
+        }
+        self.variations.deinit(allocator);
+    }
+};
+
+const RuleAction = union(enum) {
+    action: Action,
+    any_hit: void,
+    any_action: void,
+
+    fn append_to_variations(self: RuleAction, allocator: std.mem.Allocator, variations: *RuleVariations) !void {
+        switch (self) {
+            .action => |a| {
+                try variations.appendSingle(allocator, a);
+            },
+            .any_hit => {
+                const any_hit = comptime Action.anyHit();
+                try variations.appendMany(allocator, any_hit);
+            },
+            .any_action => {
+                const any_action = comptime Action.anyAction();
+                try variations.appendMany(allocator, any_action);
+            },
+        }
+    }
+};
+
+const Rule = union(enum) {
+    rule_1: struct {
+        last: RuleAction,
+    },
+
+    rule_2: struct {
+        second_last: RuleAction,
+        last: RuleAction,
+    },
+
+    rule_3: struct {
+        third_last: RuleAction,
+        second_last: RuleAction,
+        last: RuleAction,
+    },
+
+    rule_3_either_2: struct {
+        before_last_1: RuleAction,
+        before_last_2: RuleAction,
+        last: RuleAction,
+    },
+
+    rule_2_either_1: struct {
+        not_last: RuleAction,
+        last: RuleAction,
+    },
+
+    fn get_variations(self: Rule, allocator: std.mem.Allocator) !RuleVariations {
+        var variations: RuleVariations = .empty;
+        errdefer {
+            variations.deinit(allocator);
+        }
+
+        switch (self) {
+            .rule_1 => |r| {
+                try r.last.append_to_variations(allocator, &variations);
+            },
+
+            .rule_2 => |r| {
+                try r.second_last.append_to_variations(allocator, &variations);
+                try r.last.append_to_variations(allocator, &variations);
+            },
+
+            .rule_3 => |r| {
+                try r.third_last.append_to_variations(allocator, &variations);
+                try r.second_last.append_to_variations(allocator, &variations);
+                try r.last.append_to_variations(allocator, &variations);
+            },
+
+            .rule_3_either_2 => |r| {
+                var second_branch = try variations.clone(allocator);
+                defer second_branch.deinit(allocator);
+
+                try r.before_last_1.append_to_variations(allocator, &variations);
+                try r.before_last_2.append_to_variations(allocator, &variations);
+                try r.last.append_to_variations(allocator, &variations);
+
+                try r.before_last_2.append_to_variations(allocator, &second_branch);
+                try r.before_last_1.append_to_variations(allocator, &second_branch);
+                try r.last.append_to_variations(allocator, &second_branch);
+
+                try variations.combine(allocator, &second_branch);
+            },
+
+            .rule_2_either_1 => |r| {
+                const anyAction = comptime RuleAction{ .any_action = {} };
+
+                var second_branch = try variations.clone(allocator);
+                defer second_branch.deinit(allocator);
+
+                try r.not_last.append_to_variations(allocator, &variations);
+                try anyAction.append_to_variations(allocator, &variations);
+                try r.last.append_to_variations(allocator, &variations);
+
+                try anyAction.append_to_variations(allocator, &second_branch);
+                try r.not_last.append_to_variations(allocator, &second_branch);
+                try r.last.append_to_variations(allocator, &second_branch);
+
+                try variations.combine(allocator, &second_branch);
+            },
+        }
+
+        return variations;
+    }
+};
+
+fn sum(actions: []const Action) i32 {
+    var total: i32 = 0;
+    for (actions) |action| {
+        total += @intFromEnum(action);
+    }
+    return total;
+}
+
+fn solve(allocator: std.mem.Allocator, initial_value: i32, rule: Rule) !std.ArrayList(Action) {
+    var solutions: std.ArrayList(std.ArrayList(Action)) = .empty;
+    defer {
+        for (solutions.items) |*solution| {
+            solution.deinit(allocator);
+        }
+        solutions.deinit(allocator);
+    }
+
+    var variations = try rule.get_variations(allocator);
+    defer variations.deinit(allocator);
+
+    for (variations.variations.items) |variation| {
+        const target_value = initial_value - sum(variation.items);
+        var result = solve_for_target(allocator, target_value) catch |err| switch (err) {
+            error.NoSolution => continue,
+            else => return err,
+        };
+        errdefer result.deinit(allocator);
+
+        try result.appendSlice(allocator, variation.items);
+        try solutions.append(allocator, result);
+    }
+
+    if (solutions.items.len == 0) {
+        return error.NoSolution;
+    }
+
+    var best_solution: ?usize = null;
+    for (0.., solutions.items) |index, solution| {
+        if (best_solution == null or solution.items.len < solutions.items[best_solution.?].items.len) {
+            best_solution = index;
+        }
+    }
+
+    if (best_solution) |index| {
+        return try solutions.items[index].clone(allocator);
+    } else {
+        return error.NoSolution;
+    }
+}
+
+fn printSolution(actions: []const Action) void {
+    var is_first = true;
+    for (actions) |action| {
+        std.debug.print("{f}", .{action});
+        if (is_first) {
+            @branchHint(.unlikely);
+            std.debug.print(" ", .{});
+        } else {
+            is_first = false;
+        }
+    }
+    std.debug.print("\n", .{});
+}
+
+const Plan = enum {
+    FileHead,
+    ShovelHead,
+    MiningHammer,
+    KnifeHead,
+    PickaxeHead,
+    AxeHead,
+    TongPart,
+};
+
+const Material = enum {
+    BismuthBronze,
+    Bronze,
+};
+
+const Recipe = struct {
+    initial_value: i32,
+    rule: Rule,
+};
+
+const RecipesDB = struct {
+    db: std.AutoHashMap(Plan, std.AutoHashMap(Material, Recipe)),
+
+    fn init(allocator: std.mem.Allocator) RecipesDB {
+        return .{ .db = .init(allocator) };
+    }
+
+    fn deinit(self: *RecipesDB) void {
+        var it = self.db.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.deinit();
+        }
+        self.db.deinit();
+    }
+
+    fn put(self: *RecipesDB, plan: Plan, material: Material, recipe: Recipe) !void {
+        const plan_entry = try self.db.getOrPut(plan);
+
+        if (!plan_entry.found_existing) {
+            plan_entry.value_ptr.* = .init(self.db.allocator);
+        }
+
+        const material_entry = try plan_entry.value_ptr.getOrPut(material);
+
+        if (material_entry.found_existing) {
+            return error.DuplicateEntry;
+        }
+
+        material_entry.value_ptr.* = recipe;
+    }
+
+    fn get(self: *const RecipesDB, plan: Plan, material: Material) !Recipe {
+        const plan_it = self.db.get(plan);
+
+        if (plan_it) |p| {
+            const material_it = p.get(material);
+            if (material_it) |m| {
+                return m;
+            }
+        }
+
+        return error.NoRecipe;
+    }
+};
+
+fn materialsFields() [@typeInfo(Material).@"enum".fields.len]std.builtin.Type.StructField {
+    comptime var materials_fields: [@typeInfo(Material).@"enum".fields.len]std.builtin.Type.StructField = undefined;
+    comptime var null_material: ?Recipe = null;
+    inline for (0.., std.meta.fields(Material)) |ix, material| {
+        materials_fields[ix] = std.builtin.Type.StructField{
+            .name = material.name,
+            .type = ?Recipe,
+            .default_value_ptr = &null_material,
+            .is_comptime = false,
+            .alignment = @alignOf(?Recipe),
+        };
+    }
+    return materials_fields;
+}
+
+fn materialsLayout() std.builtin.Type {
+    return comptime .{ .@"struct" = .{
+        .is_tuple = false,
+        .layout = .auto,
+        .fields = &materialsFields(),
+        .decls = &.{},
+    } };
+}
+
+fn recipesFields() [@typeInfo(Plan).@"enum".fields.len]std.builtin.Type.StructField {
+    comptime var recipes_fields: [@typeInfo(Plan).@"enum".fields.len]std.builtin.Type.StructField = undefined;
+    inline for (0.., std.meta.fields(Plan)) |ix, plan| {
+        recipes_fields[ix] = std.builtin.Type.StructField{
+            .name = plan.name,
+            .type = @Type(materialsLayout()),
+            .default_value_ptr = null,
+            .is_comptime = false,
+            .alignment = @alignOf(@Type(materialsLayout())),
+        };
+    }
+    return recipes_fields;
+}
+
+fn recipesLayout() std.builtin.Type {
+    return comptime .{ .@"struct" = .{
+        .is_tuple = false,
+        .layout = .auto,
+        .fields = &recipesFields(),
+        .decls = &.{},
+    } };
+}
+
+fn dataLayout() type {
+    return struct {
+        recipes: @Type(recipesLayout()),
+
+        fn buildRecipesDB(self: @This(), allocator: std.mem.Allocator) !RecipesDB {
+            var db: RecipesDB = .init(allocator);
+            errdefer db.deinit();
+
+            inline for (std.meta.fields(Plan)) |plan| {
+                if (!@hasField(@TypeOf(self.recipes), plan.name)) {
+                    continue;
+                }
+
+                const material_plans = @field(data.recipes, plan.name);
+
+                inline for (std.meta.fields(Material)) |material| {
+                    if (!@hasField(@TypeOf(material_plans), material.name)) {
+                        continue;
+                    }
+                    const material_plan = @field(material_plans, material.name);
+                    if (material_plan) |mp| {
+                        const recipe: Recipe = .{
+                            .initial_value = @field(mp, "initial_value"),
+                            .rule = @field(mp, "rule"),
+                        };
+
+                        try db.put(@enumFromInt(plan.value), @enumFromInt(material.value), recipe);
+                    }
+                }
+            }
+
+            return db;
+        }
+    };
+}
+
+const data: dataLayout() = @import("data.zon");
+
+pub fn main() !void {
+    var debug_allocator: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = debug_allocator.deinit();
+
+    const allocator = debug_allocator.allocator();
+
+    const argv = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, argv);
+
+    if (argv.len != 3) {
+        std.debug.print("Usage: tfg_anvil Plan_Name Material", .{});
+        return error.InvalidArguments;
+    }
+
+    const plan: Plan = loop: inline for (std.meta.fields(Plan)) |p| {
+        if (std.ascii.eqlIgnoreCase(p.name, argv[1])) {
+            break :loop @enumFromInt(p.value);
+        }
+    } else {
+        return error.InvalidPlan;
+    };
+
+    const material: Material = loop: inline for (std.meta.fields(Material)) |m| {
+        if (std.ascii.eqlIgnoreCase(m.name, argv[2])) {
+            break :loop @enumFromInt(m.value);
+        }
+    } else {
+        return error.InvalidMaterial;
+    };
+
+    var db = try data.buildRecipesDB(allocator);
+    defer db.deinit();
+
+    const recipe = try db.get(plan, material);
+
+    var solution = try solve(allocator, recipe.initial_value, recipe.rule);
+    defer solution.deinit(allocator);
+
+    printSolution(solution.items);
+}

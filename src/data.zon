@@ -1,0 +1,86 @@
+.{
+    .recipes = .{
+        .FileHead = .{
+            .BismuthBronze = .{
+                .initial_value = 105,
+                .rule = .{
+                    .rule_3_either_2 = .{
+                        .before_last_1 = .{ .action = .Punch },
+                        .before_last_2 = .{ .action = .Bend },
+                        .last = .{ .action = .Upset },
+                    },
+                },
+            },
+        },
+        .ShovelHead = .{
+            .BismuthBronze = .{
+                .initial_value = 92,
+                .rule = .{
+                    .rule_2_either_1 = .{
+                        .not_last = .any_hit,
+                        .last = .{ .action = .Punch },
+                    },
+                },
+            },
+        },
+        .MiningHammer = .{
+            .Bronze = .{
+                .initial_value = 103,
+                .rule = .{
+                    .rule_2_either_1 = .{
+                        .not_last = .{ .action = .Shrink },
+                        .last = .{ .action = .Punch },
+                    },
+                },
+            },
+        },
+        .KnifeHead = .{
+            .Bronze = .{
+                .initial_value = 111,
+                .rule = .{
+                    .rule_3_either_2 = .{
+                        .before_last_1 = .{ .action = .Draw },
+                        .before_last_2 = .{ .action = .Bend },
+                        .last = .{ .action = .Punch },
+                    },
+                },
+            },
+        },
+        .PickaxeHead = .{
+            .Bronze = .{
+                .initial_value = 65,
+                .rule = .{
+                    .rule_3_either_2 = .{
+                        .before_last_1 = .{ .action = .Draw },
+                        .before_last_2 = .{ .action = .Bend },
+                        .last = .{ .action = .Punch },
+                    },
+                },
+            },
+        },
+        .AxeHead = .{
+            .Bronze = .{
+                .initial_value = 109,
+                .rule = .{
+                    .rule_3 = .{
+                        .third_last = .{ .action = .Upset },
+                        .second_last = .any_hit,
+                        .last = .{ .action = .Punch },
+                    },
+                },
+            },
+        },
+        .TongPart = .{
+            .Bronze = .{
+                .initial_value = 108,
+                .rule = .{
+                    .rule_3 = .{
+                        .third_last = .{ .action = .Bend },
+                        .second_last = .{ .action = .Draw },
+                        .last = .any_hit,
+                    },
+                },
+            },
+        },
+    },
+}
