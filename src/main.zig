@@ -343,144 +343,84 @@ fn printSolution(actions: []const Action) void {
 const Plan = enum {
     FileHead,
     ShovelHead,
+    HammerHead,
     MiningHammer,
     KnifeHead,
     PickaxeHead,
     AxeHead,
     TongPart,
-};
-
-const Material = enum {
-    BismuthBronze,
-    Bronze,
-};
-
-const Recipe = struct {
-    initial_value: i32,
-    rule: Rule,
+    Rod,
+    Plate,
+    SwordHead,
 };
 
 const RecipesDB = struct {
-    db: std.AutoHashMap(Plan, std.AutoHashMap(Material, Recipe)),
+    db: std.AutoHashMap(Plan, Rule),
 
     fn init(allocator: std.mem.Allocator) RecipesDB {
         return .{ .db = .init(allocator) };
     }
 
     fn deinit(self: *RecipesDB) void {
-        var it = self.db.iterator();
-        while (it.next()) |entry| {
-            entry.value_ptr.deinit();
-        }
         self.db.deinit();
     }
 
-    fn put(self: *RecipesDB, plan: Plan, material: Material, recipe: Recipe) !void {
+    fn put(self: *RecipesDB, plan: Plan, rule: Rule) !void {
         const plan_entry = try self.db.getOrPut(plan);
 
-        if (!plan_entry.found_existing) {
-            plan_entry.value_ptr.* = .init(self.db.allocator);
-        }
-
-        const material_entry = try plan_entry.value_ptr.getOrPut(material);
-
-        if (material_entry.found_existing) {
+        if (plan_entry.found_existing) {
             return error.DuplicateEntry;
+        } else {
+            plan_entry.value_ptr.* = rule;
         }
-
-        material_entry.value_ptr.* = recipe;
     }
 
-    fn get(self: *const RecipesDB, plan: Plan, material: Material) !Recipe {
-        const plan_it = self.db.get(plan);
+    fn get(self: *const RecipesDB, plan: Plan) !Rule {
+        const rule_it = self.db.get(plan);
 
-        if (plan_it) |p| {
-            const material_it = p.get(material);
-            if (material_it) |m| {
-                return m;
-            }
+        if (rule_it) |r| {
+            return r;
+        } else {
+            return error.NoRecipe;
         }
-
-        return error.NoRecipe;
     }
 };
 
-fn materialsFields() [@typeInfo(Material).@"enum".fields.len]std.builtin.Type.StructField {
-    comptime var materials_fields: [@typeInfo(Material).@"enum".fields.len]std.builtin.Type.StructField = undefined;
-    comptime var null_material: ?Recipe = null;
-    inline for (0.., std.meta.fields(Material)) |ix, material| {
-        materials_fields[ix] = std.builtin.Type.StructField{
-            .name = material.name,
-            .type = ?Recipe,
-            .default_value_ptr = &null_material,
-            .is_comptime = false,
-            .alignment = @alignOf(?Recipe),
-        };
-    }
-    return materials_fields;
-}
-
-fn materialsLayout() std.builtin.Type {
-    return comptime .{ .@"struct" = .{
-        .is_tuple = false,
-        .layout = .auto,
-        .fields = &materialsFields(),
-        .decls = &.{},
-    } };
-}
-
-fn recipesFields() [@typeInfo(Plan).@"enum".fields.len]std.builtin.Type.StructField {
+fn plansFields() [@typeInfo(Plan).@"enum".fields.len]std.builtin.Type.StructField {
     comptime var recipes_fields: [@typeInfo(Plan).@"enum".fields.len]std.builtin.Type.StructField = undefined;
+
     inline for (0.., std.meta.fields(Plan)) |ix, plan| {
         recipes_fields[ix] = std.builtin.Type.StructField{
             .name = plan.name,
-            .type = @Type(materialsLayout()),
+            .type = Rule,
             .default_value_ptr = null,
             .is_comptime = false,
-            .alignment = @alignOf(@Type(materialsLayout())),
+            .alignment = @alignOf(Rule),
         };
     }
     return recipes_fields;
 }
 
-fn recipesLayout() std.builtin.Type {
+fn plansLayout() std.builtin.Type {
     return comptime .{ .@"struct" = .{
         .is_tuple = false,
         .layout = .auto,
-        .fields = &recipesFields(),
+        .fields = &plansFields(),
         .decls = &.{},
     } };
 }
 
 fn dataLayout() type {
     return struct {
-        recipes: @Type(recipesLayout()),
+        plans: @Type(plansLayout()),
 
         fn buildRecipesDB(self: @This(), allocator: std.mem.Allocator) !RecipesDB {
             var db: RecipesDB = .init(allocator);
             errdefer db.deinit();
 
             inline for (std.meta.fields(Plan)) |plan| {
-                if (!@hasField(@TypeOf(self.recipes), plan.name)) {
-                    continue;
-                }
-
-                const material_plans = @field(data.recipes, plan.name);
-
-                inline for (std.meta.fields(Material)) |material| {
-                    if (!@hasField(@TypeOf(material_plans), material.name)) {
-                        continue;
-                    }
-                    const material_plan = @field(material_plans, material.name);
-                    if (material_plan) |mp| {
-                        const recipe: Recipe = .{
-                            .initial_value = @field(mp, "initial_value"),
-                            .rule = @field(mp, "rule"),
-                        };
-
-                        try db.put(@enumFromInt(plan.value), @enumFromInt(material.value), recipe);
-                    }
-                }
+                const rule = @field(self.plans, plan.name);
+                try db.put(@enumFromInt(plan.value), rule);
             }
 
             return db;
@@ -500,7 +440,7 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, argv);
 
     if (argv.len != 3) {
-        std.debug.print("Usage: tfg_anvil Plan_Name Material", .{});
+        std.debug.print("Usage: tfg_anvil Plan_Name Initial_Target", .{});
         return error.InvalidArguments;
     }
 
@@ -512,20 +452,14 @@ pub fn main() !void {
         return error.InvalidPlan;
     };
 
-    const material: Material = loop: inline for (std.meta.fields(Material)) |m| {
-        if (std.ascii.eqlIgnoreCase(m.name, argv[2])) {
-            break :loop @enumFromInt(m.value);
-        }
-    } else {
-        return error.InvalidMaterial;
-    };
+    const initial_target = try std.fmt.parseInt(i32, argv[2], 10);
 
     var db = try data.buildRecipesDB(allocator);
     defer db.deinit();
 
-    const recipe = try db.get(plan, material);
+    const rule = try db.get(plan);
 
-    var solution = try solve(allocator, recipe.initial_value, recipe.rule);
+    var solution = try solve(allocator, initial_target, rule);
     defer solution.deinit(allocator);
 
     printSolution(solution.items);
