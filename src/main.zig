@@ -46,7 +46,7 @@ const Action = enum(i8) {
     }
 };
 
-fn solve_for_target(allocator: std.mem.Allocator, target_value: i32) !std.ArrayList(Action) {
+fn solveForTarget(allocator: std.mem.Allocator, target_value: i32) !std.ArrayList(Action) {
     const limit = @as(u32, @abs(target_value)) + Action.max() * 3;
 
     const State = struct {
@@ -153,7 +153,7 @@ const RuleVariations = struct {
         return result;
     }
 
-    fn combine(self: *RuleVariations, allocator: std.mem.Allocator, other: *RuleVariations) !void {
+    fn combine(self: *RuleVariations, allocator: std.mem.Allocator, other: *const RuleVariations) !void {
         try self.variations.ensureTotalCapacity(allocator, self.variations.items.len + other.variations.items.len);
         for (other.variations.items) |variation| {
             self.variations.appendAssumeCapacity(try variation.clone(allocator));
@@ -217,7 +217,7 @@ const Rule = union(enum) {
         last: RuleAction,
     },
 
-    fn get_variations(self: Rule, allocator: std.mem.Allocator) !RuleVariations {
+    fn getVariations(self: Rule, allocator: std.mem.Allocator) !RuleVariations {
         var variations: RuleVariations = .empty;
         errdefer {
             variations.deinit(allocator);
@@ -293,12 +293,12 @@ fn solve(allocator: std.mem.Allocator, initial_value: i32, rule: Rule) !std.Arra
         solutions.deinit(allocator);
     }
 
-    var variations = try rule.get_variations(allocator);
+    var variations = try rule.getVariations(allocator);
     defer variations.deinit(allocator);
 
     for (variations.variations.items) |variation| {
         const target_value = initial_value - sum(variation.items);
-        var result = solve_for_target(allocator, target_value) catch |err| switch (err) {
+        var result = solveForTarget(allocator, target_value) catch |err| switch (err) {
             error.NoSolution => continue,
             else => return err,
         };
@@ -306,10 +306,6 @@ fn solve(allocator: std.mem.Allocator, initial_value: i32, rule: Rule) !std.Arra
 
         try result.appendSlice(allocator, variation.items);
         try solutions.append(allocator, result);
-    }
-
-    if (solutions.items.len == 0) {
-        return error.NoSolution;
     }
 
     var best_solution: ?usize = null;
@@ -354,38 +350,6 @@ const Plan = enum {
     SwordHead,
 };
 
-const RecipesDB = struct {
-    db: std.AutoHashMap(Plan, Rule),
-
-    fn init(allocator: std.mem.Allocator) RecipesDB {
-        return .{ .db = .init(allocator) };
-    }
-
-    fn deinit(self: *RecipesDB) void {
-        self.db.deinit();
-    }
-
-    fn put(self: *RecipesDB, plan: Plan, rule: Rule) !void {
-        const plan_entry = try self.db.getOrPut(plan);
-
-        if (plan_entry.found_existing) {
-            return error.DuplicateEntry;
-        } else {
-            plan_entry.value_ptr.* = rule;
-        }
-    }
-
-    fn get(self: *const RecipesDB, plan: Plan) !Rule {
-        const rule_it = self.db.get(plan);
-
-        if (rule_it) |r| {
-            return r;
-        } else {
-            return error.NoRecipe;
-        }
-    }
-};
-
 fn plansFields() [@typeInfo(Plan).@"enum".fields.len]std.builtin.Type.StructField {
     comptime var recipes_fields: [@typeInfo(Plan).@"enum".fields.len]std.builtin.Type.StructField = undefined;
 
@@ -414,16 +378,13 @@ fn dataLayout() type {
     return struct {
         plans: @Type(plansLayout()),
 
-        fn buildRecipesDB(self: @This(), allocator: std.mem.Allocator) !RecipesDB {
-            var db: RecipesDB = .init(allocator);
-            errdefer db.deinit();
-
-            inline for (std.meta.fields(Plan)) |plan| {
-                const rule = @field(self.plans, plan.name);
-                try db.put(@enumFromInt(plan.value), rule);
+        fn getRule(self: @This(), plan: Plan) Rule {
+            inline for (std.meta.fields(@TypeOf(self.plans))) |f| {
+                if (std.mem.eql(u8, f.name, @tagName(plan))) {
+                    return @field(self.plans, f.name);
+                }
             }
-
-            return db;
+            unreachable;
         }
     };
 }
@@ -453,11 +414,7 @@ pub fn main() !void {
     };
 
     const initial_target = try std.fmt.parseInt(i32, argv[2], 10);
-
-    var db = try data.buildRecipesDB(allocator);
-    defer db.deinit();
-
-    const rule = try db.get(plan);
+    const rule = data.getRule(plan);
 
     var solution = try solve(allocator, initial_target, rule);
     defer solution.deinit(allocator);
